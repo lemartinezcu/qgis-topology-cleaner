@@ -14,7 +14,17 @@ Main capabilities:
 - Enforces per-feature area-change limits during internal cleanup
 - Optionally snaps outer boundaries to a reference outline
   (without area restriction in the outline phase)
-- Supports iterative execution until convergence (error count stops decreasing)
+
+Typical use cases:
+- Voronoi or tessellation post-processing
+- Boundary normalization before spatial analysis/modeling
+- Large-scale polygon quality assurance pipelines
+
+Notes:
+- Changes are written to the layer edit buffer (not auto-committed).
+- If an outline layer is not found or is empty, outline snapping is skipped.
+- All distances are interpreted in the input layer CRS units.
+- The script can be executed iteratively until convergence (i.e., topology error counts no longer decrease between runs).
 
 Author: Leonardo Martínez
 """
@@ -27,22 +37,49 @@ import math
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+# Input polygon layer to be cleaned. Must be a polygon geometry layer loaded in the QGIS project.
 INPUT_LAYER_NAME = "voronoi_topology_errors"
+
+# Optional boundary/constraint polygon layer used to snap outer vertices.
+# If not found (or empty), boundary snapping is skipped automatically.
 OUTLINE_LAYER_NAME = "Outline"
 
+# If True, only selected features from INPUT_LAYER_NAME are processed.
+# If False, the entire layer is processed.
 PROCESS_SELECTED_ONLY = True
+
+# Base snapping tolerance in layer CRS units.
+# This controls both internal topology alignment and optional outline snapping.
 SNAP_TOLERANCE = 0.002
 
-SHORT_EDGE_FACTOR = 0.8
-COLLINEAR_FACTOR = 0.15
+# Minimum short-edge threshold for candidate vertex cleanup (derived from SNAP_TOLERANCE by default).
+SHORT_EDGE_FACTOR = 0.8  # d_min = SNAP_TOLERANCE * SHORT_EDGE_FACTOR
+
+# Collinearity threshold factor for identifying near-linear spikes (derived from SNAP_TOLERANCE).
+COLLINEAR_FACTOR = 0.15  # collinear_eps = SNAP_TOLERANCE * COLLINEAR_FACTOR
+
+# Maximum allowed area change ratio (per feature) for INTERNAL cleanup steps only.
+# Example: 0.002 = 0.2% maximum area change.
 MAX_INTERNAL_AREA_DELTA_RATIO = 0.002
 
+# Decimal precision applied after local cleanup to stabilize coordinates.
 ROUND_DECIMALS = 6
+
+# Geometry fixing method for native:fixgeometries
+# 1 = "Structure" (recommended in most topology-cleanup scenarios)
 FIX_METHOD = 1
+
+# Snap behavior for native:snapgeometries
+# 0 = Prefer closest point, 1 = Prefer closest vertex, etc. (QGIS native behavior codes)
 SNAP_BEHAVIOR = 0
 
+# Whether to perform optional outline snap when outline layer exists and has valid geometry.
 ENABLE_OUTLINE_SNAP = True
+
+# If True, script starts editing automatically if layer is not editable.
 AUTO_START_EDITING = True
+
+# If True, print additional run metadata.
 VERBOSE = True
 
 # Force-fit tuning for outline phase
@@ -146,6 +183,7 @@ def ring_cleanup_local(ring, outline_union_geom, snap_tol, d_min, colinear_eps):
     if ring is None or len(ring) < 5:
         return ring
 
+    # No outline geometry => skip "near_outline" cleanup rule
     if outline_union_geom is None or outline_union_geom.isEmpty():
         return ring
 
@@ -321,6 +359,7 @@ if VERBOSE:
 
 invalid_before, area_before, vertices_before = compute_metrics(source_feats)
 
+# Derived thresholds
 D_MIN = SNAP_TOLERANCE * SHORT_EDGE_FACTOR
 COLINEAR_EPS = SNAP_TOLERANCE * COLLINEAR_FACTOR
 
@@ -345,6 +384,16 @@ prov.addFeatures(tmp_feats)
 
 # =============================================================================
 # PIPELINE
+# Internal phase (with area guard)
+#   1) fix
+#   2) snap self
+#   3) local cleanup near outline geometry
+#   4) area guard
+#   5) fix
+#
+# Outline phase (without area guard)
+#   6) optional snap to outline
+#   7) fix final
 # =============================================================================
 step1 = runalg("native:fixgeometries", {
     "INPUT": subset,
