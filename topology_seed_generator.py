@@ -13,7 +13,7 @@ Workflow:
 Output layer name:
 - voronoi_topology_errors
 
-Author: lemartinezcu
+Author: Leonardo Martínez
 """
 
 from qgis.core import *
